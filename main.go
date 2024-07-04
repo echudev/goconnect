@@ -3,26 +3,16 @@ package main
 import (
 	"encoding/csv"
 	"fmt"
-	"math/rand"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/echudev/goconnect/sensors"
 )
-
-// Estructura para los datos del sensor
-type SensorData struct {
-	Timestamp   string  `json:"timestamp"`
-	Temperature float64 `json:"temperature"`
-	Humidity    float64 `json:"humidity"`
-}
-
-// Función para simular la lectura de datos de un sensor de temperatura y humedad
-func readSensorData() (float64, float64) {
-	temperature := 20.0 + rand.Float64()*5.0
-	humidity := 30.0 + rand.Float64()*20.0
-	return temperature, humidity
-}
 
 // Función para escribir datos en un archivo CSV
 func writeToCSV(filename string, data []string) {
@@ -41,48 +31,80 @@ func writeToCSV(filename string, data []string) {
 	}
 }
 
+// Función para crear las carpetas necesarias si no existen
+func createDirectories(path string) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		err := os.MkdirAll(path, os.ModePerm)
+		if err != nil {
+			fmt.Println("Error creating directories:", err)
+		}
+	}
+}
+
 // Función principal que combina la lectura y almacenamiento de datos
-func mainLoop(wg *sync.WaitGroup) {
+func mainLoop(stopChan <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for {
-		// Crear un nuevo archivo CSV diario
-		filename := time.Now().Format("2006-01-02") + ".csv"
+		select {
+		case <-stopChan:
+			fmt.Println("Stopping mainLoop...")
+			return
+		case <-time.Tick(10 * time.Second):
+			// Obtener la fecha actual
+			now := time.Now()
+			year := now.Format("2006")
+			month := now.Format("01")
+			day := now.Format("02")
 
-		// Crear el archivo CSV y escribir el encabezado si no existe
-		if _, err := os.Stat(filename); os.IsNotExist(err) {
-			file, err := os.Create(filename)
-			if err != nil {
-				fmt.Println("Error creating file:", err)
-				return
+			// Crear las carpetas necesarias
+			path := filepath.Join("data", year, month)
+			createDirectories(path)
+
+			// Nombre del archivo CSV diario
+			filename := filepath.Join(path, day+".csv")
+
+			// Crear el archivo CSV y escribir el encabezado si no existe
+			if _, err := os.Stat(filename); os.IsNotExist(err) {
+				file, err := os.Create(filename)
+				if err != nil {
+					fmt.Println("Error creating file:", err)
+					return
+				}
+				file.Close()
+				writeToCSV(filename, []string{"Timestamp", "Temperature (°C)", "Humidity (%)", "Pressure (hPa)"})
 			}
-			file.Close()
-			writeToCSV(filename, []string{"Timestamp", "Temperature (°C)", "Humidity (%)"})
-		}
 
-		// Leer datos del sensor cada 10 segundos
-		for range time.Tick(10 * time.Second) {
 			// Leer datos del sensor
-			temperature, humidity := readSensorData()
-
-			// Obtener la marca de tiempo actual
-			timestamp := time.Now().Format("2006-01-02 15:04:05")
+			sensorData := sensors.GetSensorData()
+			pressData := sensors.GetPressData()
 
 			// Almacenar los datos en el archivo CSV
-			data := []string{timestamp, strconv.FormatFloat(temperature, 'f', 2, 64), strconv.FormatFloat(humidity, 'f', 2, 64)}
+			data := []string{sensorData.Timestamp, strconv.FormatFloat(sensorData.Temperature, 'f', 2, 64), strconv.FormatFloat(sensorData.Humidity, 'f', 2, 64), strconv.FormatFloat(pressData.Press, 'f', 2, 64)}
 			writeToCSV(filename, data)
 
 			// Mostrar los datos en la consola (opcional)
-			fmt.Printf("Timestamp: %s, Temperature: %.2f °C, Humidity: %.2f %%\n", timestamp, temperature, humidity)
+			fmt.Printf("Timestamp: %s, Temperature: %.2f °C, Humidity: %.2f %%, Pressure: %.2f hPa\n", sensorData.Timestamp, sensorData.Temperature, sensorData.Humidity, pressData.Press)
 		}
 	}
 }
 
 func main() {
 	var wg sync.WaitGroup
+	stopChan := make(chan struct{})
+
 	wg.Add(1)
-	go mainLoop(&wg)
+	go mainLoop(stopChan, &wg)
+
+	// Capturar señales de interrupción (Ctrl+C) para una terminación controlada
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Esperar a recibir una señal de interrupción
+	<-sigChan
+	close(stopChan)
 
 	// Esperar a que mainLoop termine
 	wg.Wait()
+	fmt.Println("Program terminated gracefully.")
 }
