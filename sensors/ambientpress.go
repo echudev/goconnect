@@ -5,9 +5,9 @@ import (
 )
 
 // Estructura para los datos del sensor
-type PressData struct {
+type PressureData struct {
 	Timestamp string  `json:"timestamp"`
-	Press     float64 `json:"press"`
+	Pressure  float64 `json:"pressure"`
 }
 
 // Función para simular la lectura de datos de un sensor de temperatura y humedad
@@ -17,11 +17,11 @@ func ReadPressData() float64 {
 }
 
 // Función para obtener los datos del sensor y formatearlos en una estructura
-func GetPressData() PressData {
-	press := ReadPressData()
+func GetPressureData() PressureData {
+	pressure := ReadPressData()
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	return PressData{
+	return PressureData{
 		Timestamp: timestamp,
-		Press:     press,
+		Pressure:  pressure,
 	}
 }
