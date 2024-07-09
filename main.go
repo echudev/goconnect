@@ -11,7 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/echudev/goconnect/sensors"
+	"github.com/echudev/goconnect/drivers/davis"
+	"github.com/echudev/goconnect/drivers/thermo"
 )
 
 type SensorData struct {
@@ -42,14 +43,14 @@ func collectData(sensorFunc interface{}, interval time.Duration, stopChan <-chan
 			}
 			data := sensorDataMap[timestamp]
 			switch f := sensorFunc.(type) {
-			case func() sensors.SensorData:
+			case func() davis.SensorData:
 				sensorData := f()
 				data.Temperature += sensorData.Temperature
 				data.Humidity += sensorData.Humidity
 				data.Count++
-			case func() sensors.PressureData:
-				pressData := f()
-				data.Pressure += pressData.Pressure
+			case func() thermo.CoData:
+				coData := f()
+				data.Pressure += coData.Co
 				data.Count++
 			}
 			mu.Unlock()
@@ -145,10 +146,10 @@ func main() {
 
 	// Configurar y lanzar goroutines para cada sensor
 	wg.Add(1)
-	go collectData(sensors.GetSensorData, 10*time.Second, stopChan, &wg)
+	go collectData(davis.GetSensorData, 10*time.Second, stopChan, &wg)
 
 	wg.Add(1)
-	go collectData(sensors.GetPressureData, 15*time.Second, stopChan, &wg)
+	go collectData(thermo.GetCoData, 15*time.Second, stopChan, &wg)
 
 	// Lanzar goroutine para escribir en el CSV cada minuto
 	wg.Add(1)
