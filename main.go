@@ -11,21 +11,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/echudev/goconnect/drivers/davis"
-	"github.com/echudev/goconnect/drivers/thermo"
+	"github.com/echudev/goconnect/drivers/davisvp2"
+	"github.com/echudev/goconnect/drivers/thermo48i"
 )
 
 type DataStruct struct {
-	Temperature float64
-	Humidity    float64
-	Pressure    float64
-	Count       int
+	Data  map[string]float64
+	Count int
 }
 
 var mu sync.Mutex
 var dataMap = make(map[string]*DataStruct)
 
-func collectData(driver interface{}, interval time.Duration, stopChan <-chan struct{}, wg *sync.WaitGroup) {
+func collectData(driver func() map[string]float64, keys []string, interval time.Duration, stopChan <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -39,26 +37,22 @@ func collectData(driver interface{}, interval time.Duration, stopChan <-chan str
 			timestamp := time.Now().Format("2006-01-02 15:04")
 			mu.Lock()
 			if _, exists := dataMap[timestamp]; !exists {
-				dataMap[timestamp] = &DataStruct{}
+				dataMap[timestamp] = &DataStruct{
+					Data: make(map[string]float64),
+				}
 			}
 			data := dataMap[timestamp]
-			switch f := driver.(type) {
-			case func() davis.SensorData:
-				sensorData := f()
-				data.Temperature += sensorData.Temperature
-				data.Humidity += sensorData.Humidity
-				data.Count++
-			case func() thermo.CoData:
-				coData := f()
-				data.Pressure += coData.Co
-				data.Count++
+			sensorData := driver()
+			for _, key := range keys {
+				data.Data[key] += sensorData[key]
 			}
+			data.Count++
 			mu.Unlock()
 		}
 	}
 }
 
-func writeToCSV(filename string, stopChan <-chan struct{}, wg *sync.WaitGroup) {
+func writeToCSV(filename string, keys []string, stopChan <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -74,14 +68,10 @@ func writeToCSV(filename string, stopChan <-chan struct{}, wg *sync.WaitGroup) {
 			mu.Lock()
 			data, exists := dataMap[timestamp]
 			if exists {
-				avgTemp := data.Temperature / float64(data.Count)
-				avgHum := data.Humidity / float64(data.Count)
-				avgPress := data.Pressure / float64(data.Count)
-				csvData := []string{
-					timestamp,
-					strconv.FormatFloat(avgTemp, 'f', 2, 64),
-					strconv.FormatFloat(avgHum, 'f', 2, 64),
-					strconv.FormatFloat(avgPress, 'f', 2, 64),
+				csvData := []string{timestamp}
+				for _, key := range keys {
+					avg := data.Data[key] / float64(data.Count)
+					csvData = append(csvData, strconv.FormatFloat(avg, 'f', 2, 64))
 				}
 				writeRowToCSV(filename, csvData)
 				delete(dataMap, timestamp) // Eliminar datos después de escribir en CSV
@@ -130,6 +120,23 @@ func main() {
 	path := filepath.Join("data", year, month)
 	createDirectories(path)
 
+	// Definir los sensores seleccionados por el usuario
+	sensorsSelected := []struct {
+		Driver   func() map[string]float64
+		Keys     []string
+		Interval time.Duration
+	}{
+		{Driver: davisvp2.GetSerialCOM, Keys: []string{"Temperature", "Humidity", "Pressure"}, Interval: 10 * time.Second},
+		{Driver: thermo48i.GetModbusEthernet, Keys: []string{"Co"}, Interval: 10 * time.Second},
+		// Agregar más sensores según sea necesario
+	}
+
+	// Generar las cabeceras del CSV dinámicamente
+	headers := []string{"Timestamp"}
+	for _, sensor := range sensorsSelected {
+		headers = append(headers, sensor.Keys...)
+	}
+
 	// Nombre del archivo CSV diario
 	filename := filepath.Join(path, day+".csv")
 
@@ -141,19 +148,18 @@ func main() {
 			return
 		}
 		file.Close()
-		writeRowToCSV(filename, []string{"Timestamp", "Temperature (°C)", "Humidity (%)", "Pressure (hPa)"})
+		writeRowToCSV(filename, headers)
 	}
 
 	// Configurar y lanzar goroutines para cada sensor
-	wg.Add(1)
-	go collectData(davis.GetSensorData, 10*time.Second, stopChan, &wg)
-
-	wg.Add(1)
-	go collectData(thermo.GetCoData, 15*time.Second, stopChan, &wg)
+	for _, sensor := range sensorsSelected {
+		wg.Add(1)
+		go collectData(sensor.Driver, sensor.Keys, sensor.Interval, stopChan, &wg)
+	}
 
 	// Lanzar goroutine para escribir en el CSV cada minuto
 	wg.Add(1)
-	go writeToCSV(filename, stopChan, &wg)
+	go writeToCSV(filename, headers[1:], stopChan, &wg) // Se pasa headers[1:] para excluir "Timestamp"
 
 	// Capturar señales de interrupción (Ctrl+C) para una terminación controlada
 	sigChan := make(chan os.Signal, 1)
