@@ -15,7 +15,7 @@ import (
 	"github.com/echudev/goconnect/drivers/thermo"
 )
 
-type SensorData struct {
+type DataStruct struct {
 	Temperature float64
 	Humidity    float64
 	Pressure    float64
@@ -23,9 +23,9 @@ type SensorData struct {
 }
 
 var mu sync.Mutex
-var sensorDataMap = make(map[string]*SensorData)
+var dataMap = make(map[string]*DataStruct)
 
-func collectData(sensorFunc interface{}, interval time.Duration, stopChan <-chan struct{}, wg *sync.WaitGroup) {
+func collectData(driver interface{}, interval time.Duration, stopChan <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -38,11 +38,11 @@ func collectData(sensorFunc interface{}, interval time.Duration, stopChan <-chan
 		case <-ticker.C:
 			timestamp := time.Now().Format("2006-01-02 15:04")
 			mu.Lock()
-			if _, exists := sensorDataMap[timestamp]; !exists {
-				sensorDataMap[timestamp] = &SensorData{}
+			if _, exists := dataMap[timestamp]; !exists {
+				dataMap[timestamp] = &DataStruct{}
 			}
-			data := sensorDataMap[timestamp]
-			switch f := sensorFunc.(type) {
+			data := dataMap[timestamp]
+			switch f := driver.(type) {
 			case func() davis.SensorData:
 				sensorData := f()
 				data.Temperature += sensorData.Temperature
@@ -72,7 +72,7 @@ func writeToCSV(filename string, stopChan <-chan struct{}, wg *sync.WaitGroup) {
 			now := time.Now()
 			timestamp := now.Add(-1 * time.Minute).Format("2006-01-02 15:04")
 			mu.Lock()
-			data, exists := sensorDataMap[timestamp]
+			data, exists := dataMap[timestamp]
 			if exists {
 				avgTemp := data.Temperature / float64(data.Count)
 				avgHum := data.Humidity / float64(data.Count)
@@ -84,7 +84,7 @@ func writeToCSV(filename string, stopChan <-chan struct{}, wg *sync.WaitGroup) {
 					strconv.FormatFloat(avgPress, 'f', 2, 64),
 				}
 				writeRowToCSV(filename, csvData)
-				delete(sensorDataMap, timestamp) // Eliminar datos después de escribir en CSV
+				delete(dataMap, timestamp) // Eliminar datos después de escribir en CSV
 			}
 			mu.Unlock()
 		}
